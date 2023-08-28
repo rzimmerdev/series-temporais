@@ -28,7 +28,7 @@ def main():
 
         print(historical_bars)
         px.line(historical_bars["Close"][symbols["symbol"][0]]).show()
-	print("Deu bom")
+        print("Deu bom")
     except KeyError as e:
         print("Could not get data from cache", e)
 
