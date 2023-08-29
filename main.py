@@ -20,15 +20,17 @@ def main():
         alpaca_api = api.AlpacaMarketsAPI()
 
     try:
+        start_date = date("2022-08-28")
+        end_date = date("2023-08-27")
         symbols = alpaca_api.get_symbols(100)
 
         print(symbols)
 
-        historical_bars = alpaca_api.get_historical_bars(symbols["symbol"].values)
+        historical_bars = alpaca_api.get_historical_bars(symbols["symbol"].values, start_date, end_date)
 
         print(historical_bars)
         px.line(historical_bars["Close"][symbols["symbol"][0]]).show()
-        print("Deu bom")
+
     except KeyError as e:
         print("Could not get data from cache", e)
 
