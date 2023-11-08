@@ -1,188 +1,136 @@
-import dxlib as dx
-
-from datetime import datetime
-
-import numpy as np
-import pandas as pd
-from fastapi import FastAPI
 import uvicorn
+from fastapi import FastAPI, Request, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+from dxlib.indicators import TechnicalIndicators, SeriesIndicators
 
-
-available_columns = {
-                "close": "Close",
-                "volume": "Volume",
-                "open": "Open",
-                "high": "High",
-                "low": "Low",
-                "vwap": "VWAP",
-            }
+from dataset import Dataset
+import config
 
 
 class Server:
     def __init__(self):
-        self.data = load_data()
-        self.app = FastAPI()
-        self.financial_indicators = FinancialIndicators()
-        self.setup()
+        self.dataset = self.get_dataset(config.api_key, config.api_secret)
+        self.analysis_tools = AnalysisTools()
 
-    def setup(self):
+        self.app = None
+        self.set_app()
+
+        self.set_routes()
+
+    @staticmethod
+    def get_dataset(api_key=None, api_secret=None):
+        if api_key is None and api_secret is None:
+            raise ValueError("Either dataset or api_key and api_secret must be specified")
+        dataset = Dataset(api_key, api_secret)
+        dataset.set_history()
+
+        return dataset
+
+    def set_app(self):
+        self.app = FastAPI()
+        self.app.add_middleware(
+            CORSMiddleware,
+            allow_origins=["*"],
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+
+    def set_routes(self):
         @self.app.get("/")
         async def root():
             return {"message": "Hello World"}
 
-        # Get available symbols
-        @self.app.get("/stocks")
-        async def get_symbols():
-            return self.data["Close"].columns.values.tolist()
+        @self.app.get("/tickers")
+        async def get_tickers():
+            return self.dataset.tickers.tolist()
 
-        # Get all symbols, one field
-        @self.app.get("/stocks/{field}")
-        async def get_symbols(field: str):
-            field = available_columns.get(field, "Invalid field")
-            return self.data[field].to_json()
+        @self.app.post("/stocks")
+        async def post_stocks(request: Request):
+            if request.headers.get("Content-Type") == "application/json":
+                body = await request.json()
+            else:
+                body = {}
 
-        # Get one symbol, all fields
-        @self.app.get("/stock/{symbol}")
-        async def get_symbol(symbol: str):
+            tickers = body.get('tickers', None)
 
-            return self.get_symbol(symbol).to_json()
+            if tickers is None:
+                return self.dataset.to_dict()
+            else:
+                try:
+                    stocks = self.dataset.history.get_by_ticker(tickers)
+                    return self.dataset.to_dict(stocks)
+                except KeyError:
+                    raise HTTPException(status_code=404, detail="Tickers not found in the dataset")
 
-        self.financial_indicators.set_routes(self)
+        @self.app.post("/period")
+        async def set_period(start: str = None, end: str = None):
+            self.dataset.extend_bars(start, end)
 
-    def get_symbol(self, symbol: str):
-        all_fields = self.data.columns.values.tolist()
-
-        fields = [field for field in all_fields if field[1] == symbol]
-        return self.data[fields]
-
-    def get_close(self, symbol: str):
-        return self.data["Close", symbol]
+        self.analysis_tools.set_routes(self)
 
     def run(self, host="0.0.0.0"):
         uvicorn.run(self.app, host=host, port=8000)
 
 
-# TODO: Financial Indicators - Volatility, Moving Averages, Bollinger Bands, etc.
-# TODO: Time series analysis - autocorrelation, differencing, etc.
-# TODO: ARIMA and GARCH.
-
-class FinancialIndicators:
-    # To calculate annualized volatility, pass daily returns, period=252 and window=20
-    def volatility(self, series, window=252, period=252):
-        volatility = series.rolling(window, min_periods=1).std()
-
-        period_volatility = volatility * np.sqrt(period)
-        return period_volatility
-
-    def moving_average(self, series, window=20, exponential=False) -> pd.Series:
-        if exponential:
-            return series.ewm(span=window).mean()
-        return series.rolling(window).mean()
-
-    def bollinger_bands(self, series, window=20, exponential=False) -> (pd.Series, pd.Series):
-        moving_average = self.moving_average(series, window, exponential)
-        std = series.rolling(window).std()
-        upper_band = moving_average + 2 * std
-        lower_band = moving_average - 2 * std
-        return upper_band, lower_band
-
-    def returns(self, series, period=1):
-        return series.pct_change(period)
-
-    def log_change(self, series, period=1):
-        return np.log(series).diff(period)
-
-    def set_routes(self, server):
-        @server.app.get("/volatility/{symbol}")
-        async def get_volatility(symbol: str):
-            return self.volatility(server.get_close(symbol)).to_json()
-
-        @server.app.get("/volatility/{symbol}/window/{window}")
-        async def get_volatility(symbol: str, window: int):
-            return self.volatility(server.get_close(symbol), window).to_json()
-
-        @server.app.get("/moving_average/{symbol}")
-        async def get_moving_average(symbol: str):
-            return self.moving_average(server.get_close(symbol)).to_json()
-
-        @server.app.get("/moving_average/{symbol}/window/{window}")
-        async def get_moving_average(symbol: str, window: int):
-            return self.moving_average(server.get_close(symbol), window).to_json()
-
-        @server.app.get("/bollinger_bands/{symbol}/window/{window}")
-        async def get_bollinger_bands(symbol: str, window: int):
-            return self.bollinger_bands(server.get_close(symbol), window).to_json()
-
-        @server.app.get("/returns/{symbol}/period/{period}")
-        async def get_returns(symbol: str, period: int):
-            return self.returns(server.get_close(symbol), period).to_json()
-
-        @server.app.get("/log_returns/{symbol}/period/{period}")
-        async def get_log_change(symbol: str, period: int):
-            return self.log_change(server.get_close(symbol), period).to_json()
+class AnalysisRequest(BaseModel):
+    ticker: str
+    column: str
+    indicator: str
+    operation: str
+    params: dict
 
 
-class TechnicalIndicators:
+# TODO: ARIMA and GARCH. Maybe also LSTM?
+class AnalysisTools:
     def __init__(self):
-        self.financial_indicators = FinancialIndicators()
-
-    def autocorrelation(self, series: pd.Series, lag):
-        return series.autocorr(lag)
-
-    def diff(self, series, period=1):
-        return series.diff(period)
-
-    def detrend(self, series):
-        return series - self.financial_indicators.moving_average(series)
+        self.tsi = TechnicalIndicators()
+        self.ssi = SeriesIndicators()
 
     def set_routes(self, server):
-        @server.app.get("/autocorrelation/{symbol}/lag/{lag}")
-        async def get_autocorrelation(symbol: str, lag: int):
-            return self.autocorrelation(server.get_close(symbol), lag)
+        @server.app.post("/analysis")
+        async def analysis(request: AnalysisRequest):
+            fields = request.fields
+            tickers = request.tickers
+            indicators = request.indicators
+            operations = request.operations
+            params = request.params
 
-        @server.app.get("/diff/{symbol}")
-        async def get_diff(symbol: str):
-            return self.diff(server.get_close(symbol)).to_json()
+            securities = server.dataset.to_security(tickers)
+            mask_fields = server.dataset.df.columns.get_level_values(0).isin(fields)
+            mask_securities = server.dataset.df.columns.get_level_values(1).isin(securities)
 
-        @server.app.get("/detrend/{symbol}")
-        async def get_detrend(symbol: str):
-            return self.detrend(server.get_close(symbol)).to_json()
+            data = server.dataset.df.loc[slice(None), mask_fields & mask_securities]
 
+            for indicator in indicators:
+                for operation in operations:
+                    data = self.apply(data, indicator, operation, params)
 
-def load_data(start="2021-01-01", end="2023-06-06"):
-    data = get_api(start, end)
+    def apply(self, data, indicator, operation, params):
+        match indicator:
+            case "price":
+                data = data
+            case "volatility":
+                data = self.tsi.volatility(data, params["window"], params["period"])
+            case "moving_average":
+                data = self.tsi.volatility(data, params["window"], params["period"])
+            case "bollinger_bands":
+                data = self.tsi.bollinger_bands(data, params["window"])
 
-    def custom_aggregation(x):
-        value = x.dropna().values.tolist()
-        if len(value) > 0:
-            return value[-1]
-        return None
+        match operation:
+            case "returns":
+                data = self.ssi.returns(data)
+            case "log_change":
+                data = self.ssi.log_change(data)
+            case "auto_correlation":
+                data = self.ssi.autocorrelation(data, params["lags"])
+            case "diff":
+                data = self.ssi.diff(data, params["period"])
+            case "detrend":
+                data = self.ssi.detrend(data)
 
-    data = data.groupby(data.index.date).agg(custom_aggregation)
-    return data.fillna(method="bfill")
-
-
-def date(x):
-    return datetime.strptime(x, '%Y-%m-%d')
-
-
-def get_api(start="2021-01-01", end="2023-06-06"):
-    start_date = date(start)
-    end_date = date(end)
-
-    try:
-        import config
-        alpaca_api = dx.api.AlpacaMarketsAPI(config.api_key, config.api_secret)
-
-    except ModuleNotFoundError:
-        print("No API config found, trying to use cached data")
-        alpaca_api = dx.api.AlpacaMarketsAPI()
-
-    securities = alpaca_api.get_symbols(100)
-
-    data = alpaca_api.get_historical_bars(securities["symbol"].values, start_date, end_date)
-
-    return data
+        return data.dropna().to_json()
 
 
 def main():
