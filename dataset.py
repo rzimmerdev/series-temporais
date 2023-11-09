@@ -49,7 +49,26 @@ class Dataset:
     def to_dict(self, df=None):
         if df is None:
             df = self.df
-        return dx.serialize(df)
+
+        # DO NOT DELETE first level of df for close, open, high, low, volume, num_trades, vwap
+        # Edit second level of df columns to be security symbol instead of security object
+        df = df.copy()
+        df.columns.set_levels([security.symbol for security in df.columns.levels[1]], level=1, inplace=True)
+
+        dataset = {
+            "data": {
+                "Close": df["Close"].to_dict(orient="list"),
+                "Open": df["Open"].to_dict(orient="list"),
+                "High": df["High"].to_dict(orient="list"),
+                "Low": df["Low"].to_dict(orient="list"),
+                "Volume": df["Volume"].to_dict(orient="list"),
+                "NumTrades": df["NumTrades"].to_dict(orient="list"),
+                "VWAP": df["VWAP"].to_dict(orient="list"),
+            },
+            "index": df.index.map(lambda x: x.strftime("%Y-%m-%d")).tolist(),
+        }
+
+        return dataset
 
     def extend_bars(self, start=None, end=None):
         if start is None and end is None:

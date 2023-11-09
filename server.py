@@ -1,3 +1,4 @@
+import pandas as pd
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -11,7 +12,7 @@ import config
 class Server:
     def __init__(self):
         self.dataset = self.get_dataset(config.api_key, config.api_secret)
-        self.analysis_tools = AnalysisTools()
+        self.analysis_tools = AnalysisTools(self)
 
         self.app = None
         self.set_app()
@@ -68,48 +69,50 @@ class Server:
         async def set_period(start: str = None, end: str = None):
             self.dataset.extend_bars(start, end)
 
-        self.analysis_tools.set_routes(self)
+        self.analysis_tools.set_routes()
 
     def run(self, host="0.0.0.0"):
         uvicorn.run(self.app, host=host, port=8000)
 
 
-class AnalysisRequest(BaseModel):
-    ticker: str
-    column: str
-    indicator: str
-    operation: str
-    params: dict
-
-
 # TODO: ARIMA and GARCH. Maybe also LSTM?
 class AnalysisTools:
-    def __init__(self):
+    def __init__(self, server):
         self.tsi = TechnicalIndicators()
         self.ssi = SeriesIndicators()
+        self.server = server
 
-    def set_routes(self, server):
-        @server.app.post("/analysis")
-        async def analysis(request: AnalysisRequest):
-            fields = request.fields
-            tickers = request.tickers
-            indicators = request.indicators
-            operations = request.operations
-            params = request.params
+    def set_routes(self):
+        @self.server.app.post("/analysis")
+        async def analysis(request: Request):
+            if request.headers.get("Content-Type") == "application/json":
+                body = await request.json()
+            else:
+                body = {}
 
-            securities = server.dataset.to_security(tickers)
-            mask_fields = server.dataset.df.columns.get_level_values(0).isin(fields)
-            mask_securities = server.dataset.df.columns.get_level_values(1).isin(securities)
+            field = body.get("field", "Close")
+            tickers = body.get("tickers", [])
+            indicators = body.get("indicators", [])
+            operations = body.get("operations", [])
+            params = body.get("params", {})
 
-            data = server.dataset.df.loc[slice(None), mask_fields & mask_securities]
+            securities = self.server.dataset.to_security(tickers)
+
+            data = self.server.dataset.df[field][securities]
+
+            response = {}
 
             for indicator in indicators:
+                response[indicator] = {}
+
                 for operation in operations:
-                    data = self.apply(data, indicator, operation, params)
+                    response[indicator][operation] = self.apply(data, indicator, operation, params)
+
+            return response
 
     def apply(self, data, indicator, operation, params):
         match indicator:
-            case "price":
+            case "value":
                 data = data
             case "volatility":
                 data = self.tsi.volatility(data, params["window"], params["period"])
@@ -130,7 +133,19 @@ class AnalysisTools:
             case "detrend":
                 data = self.ssi.detrend(data)
 
-        return data.dropna().to_json()
+        return self.to_dict(data.dropna())
+
+    @staticmethod
+    def to_dict(df):
+        # df.columns.set_levels([security.symbol for security in df.columns.levels[1]], level=1, inplace=True)
+        df.columns = pd.Index([security.symbol for security in df.columns])
+
+        dataset = {
+            "data": df.to_dict(orient="list"),
+            "index": df.index.map(lambda x: x.strftime("%Y-%m-%d")).tolist(),
+        }
+
+        return dataset
 
 
 def main():
