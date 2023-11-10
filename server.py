@@ -115,11 +115,15 @@ class AnalysisTools:
             case "value":
                 data = data
             case "volatility":
-                data = self.tsi.volatility(data, params["window"], params["period"])
+                window = params.get("window", 252)
+                period = params.get("period", 252)
+                data = self.tsi.volatility(data, window, period)
             case "moving_average":
-                data = self.tsi.volatility(data, params["window"], params["period"])
+                window = params.get("window", 20)
+                data = self.ssi.sma(data, window)
             case "bollinger_bands":
-                data = self.tsi.bollinger_bands(data, params["window"])
+                window = params.get("window", 20)
+                data = self.tsi.bollinger_bands(data, window)
 
         match operation:
             case "returns":
@@ -127,9 +131,11 @@ class AnalysisTools:
             case "log_change":
                 data = self.ssi.log_change(data)
             case "auto_correlation":
-                data = self.ssi.autocorrelation(data, params["lags"])
+                lags = params.get("lags", 15)
+                data = self.ssi.autocorrelation(data, lags)
             case "diff":
-                data = self.ssi.diff(data, params["period"])
+                period = params.get("period", 1)
+                data = self.ssi.diff(data, period)
             case "detrend":
                 data = self.ssi.detrend(data)
 
