@@ -1,8 +1,6 @@
 from datetime import datetime
 
 import dxlib as dx
-import pandas as pd
-from numpy import ndarray
 
 
 def custom_aggregation(x):
@@ -13,88 +11,68 @@ def custom_aggregation(x):
 
 
 class Dataset:
-    def __init__(self, api_key, api_secret):
+    def __init__(self, api_key, api_secret, timeframe="1D"):
         self.api_key = api_key
         self.api_secret = api_secret
 
         self.api = dx.api.AlpacaMarketsAPI(api_key, api_secret)
-        self.tickers = self.get_tickers()
 
         self.history: dx.History | None = None
-        self._timeframe = None
+        self.security_manager = dx.SecurityManager()
+        self._timeframe = timeframe
 
     @property
     def df(self):
         return self.history.df
 
-    @staticmethod
-    def to_date(x):
-        return datetime.strptime(x, '%Y-%m-%d')
+    def get(self, *args, **kwargs):
+        return self.history.get(*args, **kwargs)
 
-    def set_history(self, timeframe="1D", start="2021-01-01", end="2023-01-02"):
-        self._timeframe = timeframe
-        self.history = dx.History(self.get_bars(self.tickers, start, end))
+    def set(self, securities=None, start="2021-01-01", end="2023-01-02"):
+        bars = self.api.get_historical_bars(securities or self.get_tickers(), start, end, self._timeframe)
+        self.history = dx.History(bars, self.security_manager)
 
-    def get_bars(self, tickers, start: str | datetime, end: str | datetime) -> pd.DataFrame:
-        start_date = self.to_date(start) if isinstance(start, str) else start
-        end_date = self.to_date(end) if isinstance(end, str) else end
-        historical_bars = self.api.get_historical_bars(tickers, start_date, end_date, self._timeframe)
+    def get_tickers(self, securities: list[dx.Security] | None = None):
+        if securities is None:
+            tickers = self.api.get_tickers(100)["ticker"].to_list()
+            self.security_manager.add(tickers)
+            return tickers
+        return [security.ticker for security in securities]
 
-        bars = historical_bars.groupby(historical_bars.index.date).agg(custom_aggregation)
-        return bars.fillna(method="bfill")
+    def get_bars(self, securities=None, start="2021-01-01", end="2023-01-02"):
+        return self.api.get_historical_bars(
+            self.get_tickers(securities),
+            start,
+            end,
+            self._timeframe)
 
-    def get_tickers(self, n: int = 100) -> ndarray:
-        return self.api.get_tickers(n)["symbol"].values
-
-    def to_dict(self, df=None):
-        if df is None:
-            df = self.df
-
-        # DO NOT DELETE first level of df for close, open, high, low, volume, num_trades, vwap
-        # Edit second level of df columns to be security symbol instead of security object
-        df = df.copy()
-        df.columns.set_levels([security.symbol for security in df.columns.levels[1]], level=1, inplace=True)
-
-        dataset = {
-            "data": {
-                "Close": df["Close"].to_dict(orient="list"),
-                "Open": df["Open"].to_dict(orient="list"),
-                "High": df["High"].to_dict(orient="list"),
-                "Low": df["Low"].to_dict(orient="list"),
-                "Volume": df["Volume"].to_dict(orient="list"),
-                "NumTrades": df["NumTrades"].to_dict(orient="list"),
-                "VWAP": df["VWAP"].to_dict(orient="list"),
-            },
-            "index": df.index.map(lambda x: x.strftime("%Y-%m-%d")).tolist(),
-        }
-
-        return dataset
-
-    def extend_bars(self, start=None, end=None):
+    def extend(self, securities=None, start=None, end=None):
         if start is None and end is None:
             raise ValueError("Either start or end must be specified")
 
         if start is None:
-            start = self.df.index[-1]
+            start = self.df.index[0][0]
 
         if end is None:
-            end = self.df.index[0]
+            end = self.df.index[0][0]
 
-        self.history += self.get_bars(self.tickers, start, end)
+        self.history += self.get_bars(securities, start, end)
 
     def to_security(self, ticker: str | list[str]) -> list[dx.Security]:
-        return list(self.history.security_manager.get_securities(ticker).values())
+        return list(self.history.security_manager.get(ticker).values())
 
-    def close(self):
-        return self.df["Close"]
 
-    def get_stock(self, ticker):
-        stock_data = {
-            'Ticker': ticker,
-            'Close': self.df['Close'][ticker].tolist(),
-            'Open': self.df['Open'][ticker].tolist(),
-            'High': self.df['High'][ticker].tolist(),
-            'Low': self.df['Low'][ticker].tolist(),
-            'Volume': self.df['Volume'][ticker].tolist(),
-        }
-        return stock_data
+def date(x):
+    return datetime.strptime(x, '%Y-%m-%d')
+
+
+def main():
+    from config import api_key, api_secret
+
+    dataset = Dataset(api_key, api_secret)
+    dataset.set(start="2021-01-01", end="2021-01-02")
+    print(dataset.df.head())
+
+
+if __name__ == "__main__":
+    main()

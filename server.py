@@ -2,7 +2,6 @@ import pandas as pd
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
 from dxlib.indicators import TechnicalIndicators, SeriesIndicators
 
 from dataset import Dataset
@@ -60,7 +59,7 @@ class Server:
                 return self.dataset.to_dict()
             else:
                 try:
-                    stocks = self.dataset.history.get_by_ticker(tickers)
+                    stocks = self.dataset.history.get(tickers)
                     return self.dataset.to_dict(stocks)
                 except KeyError:
                     raise HTTPException(status_code=404, detail="Tickers not found in the dataset")
