@@ -3,6 +3,7 @@ import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from dxlib.indicators import TechnicalIndicators, SeriesIndicators
+from dxlib import History
 
 from dataset import Dataset
 import config
@@ -10,22 +11,15 @@ import config
 
 class Server:
     def __init__(self):
-        self.dataset = self.get_dataset(config.api_key, config.api_secret)
+        self.dataset = Dataset(config.API_KEY, config.API_SECRET)
+        self.dataset.set()
+
         self.analysis_tools = AnalysisTools(self)
 
         self.app = None
         self.set_app()
 
         self.set_routes()
-
-    @staticmethod
-    def get_dataset(api_key=None, api_secret=None):
-        if api_key is None and api_secret is None:
-            raise ValueError("Either dataset or api_key and api_secret must be specified")
-        dataset = Dataset(api_key, api_secret)
-        dataset.set_history()
-
-        return dataset
 
     def set_app(self):
         self.app = FastAPI()
@@ -44,29 +38,30 @@ class Server:
 
         @self.app.get("/tickers")
         async def get_tickers():
-            return self.dataset.tickers.tolist()
+            return self.dataset.tickers
 
-        @self.app.post("/stocks")
+        @self.app.post("/get")
         async def post_stocks(request: Request):
             if request.headers.get("Content-Type") == "application/json":
                 body = await request.json()
             else:
                 body = {}
 
-            tickers = body.get('tickers', None)
+            tickers = body.get("tickers", None)
+            fields = body.get("fields", None)
+            interval = body.get("interval", None)
 
-            if tickers is None:
-                return self.dataset.to_dict()
+            if interval is not None:
+                self.dataset.extend(interval[0], interval[1])
             else:
-                try:
-                    stocks = self.dataset.history.get(tickers)
-                    return self.dataset.to_dict(stocks)
-                except KeyError:
-                    raise HTTPException(status_code=404, detail="Tickers not found in the dataset")
+                self.dataset.set()
 
-        @self.app.post("/period")
-        async def set_period(start: str = None, end: str = None):
-            self.dataset.extend_bars(start, end)
+            try:
+                data = self.dataset.history.get_interval(tickers, fields, [interval])
+            except KeyError:
+                raise HTTPException(status_code=400, detail="Invalid ticker")
+
+            return data.serialized()['df']
 
         self.analysis_tools.set_routes()
 
@@ -89,16 +84,14 @@ class AnalysisTools:
             else:
                 body = {}
 
-            field = body.get("field", "Close")
-            tickers = body.get("tickers", [])
+            tickers = body.get("tickers", None)
+            fields = body.get("fields", None)
+            interval = body.get("interval", None)
             indicators = body.get("indicators", [])
             operations = body.get("operations", [])
             params = body.get("params", {})
 
-            securities = self.server.dataset.to_security(tickers)
-
-            data = self.server.dataset.df[field][securities]
-
+            data = self.server.dataset.history.get_interval(tickers, fields, [interval])
             response = {}
 
             for indicator in indicators:
@@ -109,22 +102,28 @@ class AnalysisTools:
 
             return response
 
-    def apply(self, data, indicator, operation, params):
+    @staticmethod
+    def formatter(output):
+        return History(pd.DataFrame(output, columns=['close'])).serialized()['df']
+
+    def apply(self, data: History, indicator, operation, params):
         match indicator:
             case "value":
-                data = data
+                data = data.get_raw(fields=['close'])
             case "volatility":
                 window = params.get("window", 252)
                 period = params.get("period", 252)
-                data = self.tsi.volatility(data, window, period)
+                data = self.tsi.volatility(data.df, window, period)
             case "moving_average":
                 window = params.get("window", 20)
-                data = self.ssi.sma(data, window)
+                data = self.ssi.sma(data.df, window)
             case "bollinger_bands":
                 window = params.get("window", 20)
-                data = self.tsi.bollinger_bands(data, window)
+                data = self.tsi.bollinger_bands(data.df, window)
 
         match operation:
+            case "value":
+                pass
             case "returns":
                 data = self.ssi.returns(data)
             case "log_change":
@@ -138,7 +137,7 @@ class AnalysisTools:
             case "detrend":
                 data = self.ssi.detrend(data)
 
-        return self.to_dict(data.dropna())
+        return self.formatter(data.dropna())
 
     @staticmethod
     def to_dict(df):

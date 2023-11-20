@@ -19,6 +19,7 @@ class Dataset:
 
         self.history: dx.History | None = None
         self.security_manager = dx.SecurityManager()
+        self.tickers = None
         self._timeframe = timeframe
 
     @property
@@ -28,35 +29,27 @@ class Dataset:
     def get(self, *args, **kwargs):
         return self.history.get(*args, **kwargs)
 
-    def set(self, securities=None, start="2021-01-01", end="2023-01-02"):
-        bars = self.api.get_historical_bars(securities or self.get_tickers(), start, end, self._timeframe)
+    def set(self, start="2021-01-01", end="2023-01-01"):
+        self.tickers = self.api.get_tickers(n=100)['ticker'].tolist()
+        self.security_manager.add(self.tickers)
+        bars = self.api.get_historical_bars(self.tickers, start, end, self._timeframe)
         self.history = dx.History(bars, self.security_manager)
 
-    def get_tickers(self, securities: list[dx.Security] | None = None):
-        if securities is None:
-            tickers = self.api.get_tickers(100)["ticker"].to_list()
-            self.security_manager.add(tickers)
-            return tickers
-        return [security.ticker for security in securities]
-
-    def get_bars(self, securities=None, start="2021-01-01", end="2023-01-02"):
+    def get_bars(self, start="2021-01-01", end="2023-01-02"):
         return self.api.get_historical_bars(
-            self.get_tickers(securities),
+            self.tickers,
             start,
             end,
             self._timeframe)
 
-    def extend(self, securities=None, start=None, end=None):
-        if start is None and end is None:
-            raise ValueError("Either start or end must be specified")
-
+    def extend(self, start=None, end=None):
         if start is None:
             start = self.df.index[0][0]
 
         if end is None:
-            end = self.df.index[0][0]
+            end = self.df.index[-1][0]
 
-        self.history += self.get_bars(securities, start, end)
+        self.history += self.get_bars(start, end)
 
     def to_security(self, ticker: str | list[str]) -> list[dx.Security]:
         return list(self.history.security_manager.get(ticker).values())
@@ -67,10 +60,10 @@ def date(x):
 
 
 def main():
-    from config import api_key, api_secret
+    from config import API_KEY, API_SECRET
 
-    dataset = Dataset(api_key, api_secret)
-    dataset.set(start="2021-01-01", end="2021-01-02")
+    dataset = Dataset(API_KEY, API_SECRET)
+    dataset.set(start="2021-01-01", end="2023-01-01")
     print(dataset.df.head())
 
 
