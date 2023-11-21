@@ -5,6 +5,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from dxlib.indicators import TechnicalIndicators, SeriesIndicators
 from dxlib import History
 
+from statsmodels.tsa.seasonal import seasonal_decompose
+
 from dataset import Dataset
 import config
 
@@ -98,18 +100,67 @@ class AnalysisTools:
                 response[indicator] = {}
 
                 for operation in operations:
-                    response[indicator][operation] = self.apply(data, indicator, operation, params)
+                    response[indicator][operation] = self.apply(data, fields, indicator, operation, params)
+
+            return response
+
+        @self.server.app.post("/autocorrelation")
+        async def autocorrelation(request: Request):
+            if request.headers.get("Content-Type") == "application/json":
+                body = await request.json()
+            else:
+                body = {}
+
+            tickers = body.get("tickers", None)
+            lag_range = body.get("range", None)
+
+            data = self.server.dataset.history
+
+            response = {"pacf": {}, "acf": {}}
+            for ticker in tickers:
+                df = data.get(securities=[ticker]).get_raw(fields=['close'])
+                df = self.ssi.log_change(df, window=1).dropna()
+                response["pacf"][ticker] = self.ssi.pacf(df, lag_range).dropna().tolist()
+                response["acf"][ticker] = self.ssi.autocorrelation(df, lag_range)
+
+            return response
+
+        @self.server.app.post("/decompose")
+        async def decompose(request: Request):
+            if request.headers.get("Content-Type") == "application/json":
+                body = await request.json()
+            else:
+                body = {}
+
+            tickers = body.get("tickers", None)
+            period = body.get("period", None)
+            interval = body.get("interval", None)
+
+            data = self.server.dataset.history.get_interval(intervals=[interval])
+
+            response = {}
+            for ticker in tickers:
+                response[ticker] = {}
+
+                df = data.get(securities=[ticker]).get_raw(fields=['close'])
+                df = self.ssi.log_change(df, window=1).dropna()
+
+                decomposition = seasonal_decompose(df, period=period)
+
+                response[ticker]["trend"] = decomposition.trend.dropna().tolist()
+                response[ticker]["seasonal"] = decomposition.seasonal.dropna().tolist()
+                response[ticker]["residual"] = decomposition.resid.dropna().tolist()
 
             return response
 
     @staticmethod
     def formatter(output):
-        return History(pd.DataFrame(output, columns=['close'])).serialized()['df']
+        return History(pd.DataFrame(output)).serialized()['df']
 
-    def apply(self, data: History, indicator, operation, params):
+    def apply(self, data: History, fields, indicator, operation, params):
         match indicator:
             case "value":
-                data = data.get_raw(fields=['close'])
+                data = data.get(fields=fields).df
             case "volatility":
                 window = params.get("window", 252)
                 period = params.get("period", 252)
@@ -128,7 +179,7 @@ class AnalysisTools:
                 data = self.ssi.returns(data)
             case "log_change":
                 data = self.ssi.log_change(data)
-            case "auto_correlation":
+            case "autocorrelation":
                 lags = params.get("lags", 15)
                 data = self.ssi.autocorrelation(data, lags)
             case "diff":
