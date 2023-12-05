@@ -15,7 +15,7 @@ class Dataset:
         self.api_key = api_key
         self.api_secret = api_secret
 
-        self.api = dx.api.AlpacaMarketsAPI(api_key, api_secret)
+        self.api = dx.data.AlpacaMarketsData(api_key, api_secret)
 
         self.history: dx.History | None = None
         self.security_manager = dx.SecurityManager()

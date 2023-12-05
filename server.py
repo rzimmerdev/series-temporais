@@ -1,4 +1,6 @@
 import pandas as pd
+from pmdarima.arima import auto_arima
+from pmdarima.arima import ARIMA
 import uvicorn
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -71,7 +73,7 @@ class Server:
         uvicorn.run(self.app, host=host, port=8000)
 
 
-# TODO: ARIMA and GARCH. Maybe also LSTM?
+# TODO: ARIMA and GARCH.
 class AnalysisTools:
     def __init__(self, server):
         self.tsi = TechnicalIndicators()
@@ -150,6 +152,54 @@ class AnalysisTools:
                 response[ticker]["trend"] = decomposition.trend.dropna().tolist()
                 response[ticker]["seasonal"] = decomposition.seasonal.dropna().tolist()
                 response[ticker]["residual"] = decomposition.resid.dropna().tolist()
+
+            return response
+
+        @self.server.app.post("/arima")
+        async def ar(request: Request):
+            if request.headers.get("Content-Type") == "application/json":
+                body = await request.json()
+            else:
+                body = {}
+
+            tickers = body.get("tickers", None)
+            interval = body.get("interval", None)
+            end = body.get("end", None)
+
+            data = self.server.dataset.history.get_interval(intervals=[interval])
+            end = min(end, int(len(data.df) * 0.05)) if end is not None else 20
+
+            p = body.get("p", None)
+            d = body.get("d", None)
+            q = body.get("q", None)
+
+            params = {
+                'start_p': 0 if p is None else p,
+                'd': 0 if d is None else d,
+                'start_q': 0 if q is None else q,
+                'max_p': 0 if p == 0 else 5,
+                'max_d': 0 if d == 0 else 2,
+                'max_q': 0 if q == 0 else 5,
+                'seasonal': False,
+                'stepwise': True
+            }
+
+            response = {}
+            for ticker in tickers:
+                response[ticker] = {}
+
+                df = data.get(securities=[ticker]).get_raw(fields=['close'])
+
+                train_df = df[:-end]
+                test_size = len(df) - len(train_df)
+                model = auto_arima(train_df, **params)
+
+                response[ticker]["predictions"] = model.predict(test_size).tolist()
+
+                # Calculate prediction error (MAE) and residuals
+                residuals = (response[ticker]["predictions"] - df[-end:]).abs().tolist()
+                response[ticker]["residuals"] = residuals
+                response[ticker]["error"] = (response[ticker]["predictions"] - df[-end:]).abs().mean().tolist()
 
             return response
 
