@@ -194,12 +194,17 @@ class AnalysisTools:
                 test_size = len(df) - len(train_df)
                 model = auto_arima(train_df, **params)
 
-                response[ticker]["predictions"] = model.predict(test_size).tolist()
+                predictions = model.predict(test_size).tolist()
+                true_values = df[-end:].values.tolist()
 
-                # Calculate prediction error (MAE) and residuals
-                residuals = (response[ticker]["predictions"] - df[-end:]).abs().tolist()
+                response[ticker]["forecast"] = {
+                    "predictions": predictions,
+                    "values": true_values
+                }
+                residuals = (predictions - df[-end:]).abs().tolist()
                 response[ticker]["residuals"] = residuals
-                response[ticker]["error"] = (response[ticker]["predictions"] - df[-end:]).abs().mean().tolist()
+                response[ticker]["error"] = (predictions - df[-end:]).abs().mean().tolist()
+                response[ticker]["order"] = model.order
 
             return response
 
